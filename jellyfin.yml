@@ -9,7 +9,7 @@ metadata:
   name: jellyfin-config-pv
 spec:
   capacity:
-    storage: 1Gi
+    storage: 5Gi
   volumeMode: Filesystem
   accessModes:
     - ReadWriteOnce
@@ -48,7 +48,7 @@ spec:
   storageClassName: "longhorn"
   resources:
     requests:
-      storage: 1Gi
+      storage: 5Gi
   volumeName: "jellyfin-config-pv"
 ---
 # apiVersion: v1
