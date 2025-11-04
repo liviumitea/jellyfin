@@ -1,125 +1,80 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: media
+  name: jellyfin
 ---
-# ========= SHARED STORAGE (RWX via NFS) =========
-# This backs /data for all apps. If you already have a dynamic RWX class (e.g., Longhorn NFS),
-# you can skip the PV and create a PVC with that storageClass instead.
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: media-data-pv
-spec:
-  capacity:
-    storage: 5Ti
-  volumeMode: Filesystem
-  accessModes:
-    - ReadWriteMany
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: ""   # static PV (no storageClass)
-  mountOptions:
-    - nfsvers=4.1
-    - rsize=1048576
-    - wsize=1048576
-    - noatime
-    - nconnect=4
-  nfs:
-    server: 10.0.0.10            # <-- CHANGE ME
-    path: /export/media          # <-- CHANGE ME
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: media-data-pvc
-  namespace: media
-spec:
-  accessModes:
-    - ReadWriteMany
-  resources:
-    requests:
-      storage: 5Ti
-  storageClassName: ""
-  volumeName: media-data-pv
----
-# ========= PER-APP CONFIG PVCs (RWO on Longhorn) =========
+# ===================== PVCs binding to your existing Longhorn PVs =====================
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: jellyfin-config-pvc
-  namespace: media
+  namespace: jellyfin
 spec:
-  accessModes: [ "ReadWriteOnce" ]
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: "longhorn"
   resources:
     requests:
-      storage: 10Gi
-  storageClassName: longhorn
+      storage: 5Gi
+  volumeName: "jellyfin-config-pv"
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: radarr-config-pvc
-  namespace: media
+  namespace: jellyfin
 spec:
-  accessModes: [ "ReadWriteOnce" ]
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: "longhorn"
   resources:
     requests:
       storage: 5Gi
-  storageClassName: longhorn
+  volumeName: "radarr-config-pv"
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: sonarr-config-pvc
-  namespace: media
+  namespace: jellyfin
 spec:
-  accessModes: [ "ReadWriteOnce" ]
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: "longhorn"
   resources:
     requests:
       storage: 5Gi
-  storageClassName: longhorn
+  volumeName: "sonarr-config-pv"
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: bazarr-config-pvc
-  namespace: media
+  namespace: jellyfin
 spec:
-  accessModes: [ "ReadWriteOnce" ]
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: "longhorn"
   resources:
     requests:
-      storage: 2Gi
-  storageClassName: longhorn
+      storage: 5Gi
+  volumeName: "bazarr-config-pv"
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: jellyseerr-config-pvc
-  namespace: media
+  namespace: jellyfin
 spec:
-  accessModes: [ "ReadWriteOnce" ]
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: "longhorn"
   resources:
     requests:
-      storage: 2Gi
-  storageClassName: longhorn
+      storage: 5Gi
+  volumeName: "jellyseerr-config-pv"
 ---
-# ========= OPTIONAL: Put common env into a ConfigMap =========
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: media-common-env
-  namespace: media
-data:
-  TZ: Europe/Amsterdam        # <-- CHANGE if needed
-  PUID: "1000"                # <-- CHANGE to your uid
-  PGID: "1000"                # <-- CHANGE to your gid
----
-# ========= JELLYFIN =========
+# ===================== JELLYFIN =====================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: jellyfin
-  namespace: media
+  namespace: jellyfin
   labels: { app: jellyfin }
 spec:
   replicas: 1
@@ -128,79 +83,76 @@ spec:
     metadata:
       labels: { app: jellyfin }
     spec:
+      nodeSelector:
+        kubernetes.io/hostname: NODE_WITH_MEDIA   # <-- set this
+      volumes:
+      - name: jellyfin-config
+        persistentVolumeClaim:
+          claimName: jellyfin-config-pvc
+      - name: media
+        hostPath:
+          path: /data-nfs/data/plex
+          type: Directory
       containers:
       - name: jellyfin
         image: ghcr.io/linuxserver/jellyfin:latest
         imagePullPolicy: IfNotPresent
         env:
-        - name: TZ
-          valueFrom: { configMapKeyRef: { name: media-common-env, key: TZ } }
-        - name: PUID
-          valueFrom: { configMapKeyRef: { name: media-common-env, key: PUID } }
-        - name: PGID
-          valueFrom: { configMapKeyRef: { name: media-common-env, key: PGID } }
-        - name: JELLYFIN_PublishedServerUrl
-          value: "jellyfin.example.com"    # <-- or your LB IP; used by clients for external URL
+        - { name: JELLYFIN_PublishedServerUrl, value: "172.16.23.35" }
+        - { name: PUID, value: "1044" }
+        - { name: PGID, value: "65541" }
+        - { name: TZ,   value: "Europe/Amsterdam" }
+        securityContext:
+          privileged: true   # remove if you don't need HW acceleration
         ports:
         - { name: http,  containerPort: 8096, protocol: TCP }
         - { name: https, containerPort: 8920, protocol: TCP }
-        # DLNA/Discovery (UDP) are exposed via a separate Service below
+        - { name: dlna-udp, containerPort: 1900, protocol: UDP }
+        - { name: discovery-udp, containerPort: 7359, protocol: UDP }
         volumeMounts:
-        - { name: config, mountPath: /config }
-        - { name: media,  mountPath: /data }
-        # If you use a downloads directory, mount it as /downloads as well
-        resources:
-          requests:
-            cpu: "200m"
-            memory: "512Mi"
-          limits:
-            memory: "2Gi"
-      volumes:
-      - name: config
-        persistentVolumeClaim: { claimName: jellyfin-config-pvc }
-      - name: media
-        persistentVolumeClaim: { claimName: media-data-pvc }
+        - { name: jellyfin-config, mountPath: /config }
+        - { name: media,          mountPath: /data }
 ---
+# One TCP LoadBalancer IP for all UIs (shared IP on different ports)
 apiVersion: v1
 kind: Service
 metadata:
-  name: jellyfin
-  namespace: media
-  labels: { app: jellyfin }
+  name: jellyfin-tcp
+  namespace: jellyfin
+  annotations:
+    metallb.universe.tf/allow-shared-ip: media-stack
 spec:
   selector: { app: jellyfin }
-  type: ClusterIP
+  type: LoadBalancer
+  loadBalancerIP: "172.16.23.35"
+  sessionAffinity: ClientIP
   ports:
-  - name: http
-    port: 8096
-    targetPort: 8096
-  - name: https
-    port: 8920
-    targetPort: 8920
+  - { name: jellyfin-http,  port: 8096, targetPort: 8096, protocol: TCP }
+  - { name: jellyfin-https, port: 8920, targetPort: 8920, protocol: TCP }
 ---
-# OPTIONAL: DLNA/Discovery on LAN (MetalLB). Remove if you don't need DLNA.
+# Keep UDP discovery/DLNA on the SAME IP as well
 apiVersion: v1
 kind: Service
 metadata:
   name: jellyfin-udp
-  namespace: media
+  namespace: jellyfin
   annotations:
-    metallb.universe.tf/allow-shared-ip: jellyfin
+    metallb.universe.tf/allow-shared-ip: media-stack
 spec:
   selector: { app: jellyfin }
   type: LoadBalancer
-  loadBalancerIP: 172.16.23.35     # <-- CHANGE/REMOVE if not reserving a static IP
+  loadBalancerIP: "172.16.23.35"
   sessionAffinity: ClientIP
   ports:
   - { name: dlna-udp,      port: 1900, targetPort: 1900, protocol: UDP }
   - { name: discovery-udp, port: 7359, targetPort: 7359, protocol: UDP }
 ---
-# ========= RADARR =========
+# ===================== RADARR =====================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: radarr
-  namespace: media
+  namespace: jellyfin
   labels: { app: radarr }
 spec:
   replicas: 1
@@ -209,45 +161,51 @@ spec:
     metadata:
       labels: { app: radarr }
     spec:
+      nodeSelector:
+        kubernetes.io/hostname: NODE_WITH_MEDIA
+      volumes:
+      - name: radarr-config
+        persistentVolumeClaim:
+          claimName: radarr-config-pvc
+      - name: media
+        hostPath:
+          path: /data-nfs/data/plex
+          type: Directory
       containers:
       - name: radarr
         image: ghcr.io/linuxserver/radarr:latest
         imagePullPolicy: IfNotPresent
         env:
-        - name: TZ
-          valueFrom: { configMapKeyRef: { name: media-common-env, key: TZ } }
-        - name: PUID
-          valueFrom: { configMapKeyRef: { name: media-common-env, key: PUID } }
-        - name: PGID
-          valueFrom: { configMapKeyRef: { name: media-common-env, key: PGID } }
+        - { name: PUID, value: "1044" }
+        - { name: PGID, value: "65541" }
+        - { name: TZ,   value: "Europe/Amsterdam" }
         ports:
         - { name: http, containerPort: 7878 }
         volumeMounts:
-        - { name: config, mountPath: /config }
-        - { name: media,  mountPath: /data }
-      volumes:
-      - name: config
-        persistentVolumeClaim: { claimName: radarr-config-pvc }
-      - name: media
-        persistentVolumeClaim: { claimName: media-data-pvc }
+        - { name: radarr-config, mountPath: /config }
+        - { name: media,         mountPath: /data }
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: radarr
-  namespace: media
+  namespace: jellyfin
+  annotations:
+    metallb.universe.tf/allow-shared-ip: media-stack
 spec:
   selector: { app: radarr }
-  type: ClusterIP
+  type: LoadBalancer
+  loadBalancerIP: "172.16.23.35"
+  sessionAffinity: ClientIP
   ports:
-  - { name: http, port: 7878, targetPort: 7878 }
+  - { name: radarr-http, port: 7878, targetPort: 7878, protocol: TCP }
 ---
-# ========= SONARR =========
+# ===================== SONARR =====================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: sonarr
-  namespace: media
+  namespace: jellyfin
   labels: { app: sonarr }
 spec:
   replicas: 1
@@ -256,45 +214,51 @@ spec:
     metadata:
       labels: { app: sonarr }
     spec:
+      nodeSelector:
+        kubernetes.io/hostname: NODE_WITH_MEDIA
+      volumes:
+      - name: sonarr-config
+        persistentVolumeClaim:
+          claimName: sonarr-config-pvc
+      - name: media
+        hostPath:
+          path: /data-nfs/data/plex
+          type: Directory
       containers:
       - name: sonarr
         image: ghcr.io/linuxserver/sonarr:latest
         imagePullPolicy: IfNotPresent
         env:
-        - name: TZ
-          valueFrom: { configMapKeyRef: { name: media-common-env, key: TZ } }
-        - name: PUID
-          valueFrom: { configMapKeyRef: { name: media-common-env, key: PUID } }
-        - name: PGID
-          valueFrom: { configMapKeyRef: { name: media-common-env, key: PGID } }
+        - { name: PUID, value: "1044" }
+        - { name: PGID, value: "65541" }
+        - { name: TZ,   value: "Europe/Amsterdam" }
         ports:
         - { name: http, containerPort: 8989 }
         volumeMounts:
-        - { name: config, mountPath: /config }
-        - { name: media,  mountPath: /data }
-      volumes:
-      - name: config
-        persistentVolumeClaim: { claimName: sonarr-config-pvc }
-      - name: media
-        persistentVolumeClaim: { claimName: media-data-pvc }
+        - { name: sonarr-config, mountPath: /config }
+        - { name: media,         mountPath: /data }
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: sonarr
-  namespace: media
+  namespace: jellyfin
+  annotations:
+    metallb.universe.tf/allow-shared-ip: media-stack
 spec:
   selector: { app: sonarr }
-  type: ClusterIP
+  type: LoadBalancer
+  loadBalancerIP: "172.16.23.35"
+  sessionAffinity: ClientIP
   ports:
-  - { name: http, port: 8989, targetPort: 8989 }
+  - { name: sonarr-http, port: 8989, targetPort: 8989, protocol: TCP }
 ---
-# ========= BAZARR =========
+# ===================== BAZARR =====================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: bazarr
-  namespace: media
+  namespace: jellyfin
   labels: { app: bazarr }
 spec:
   replicas: 1
@@ -303,45 +267,51 @@ spec:
     metadata:
       labels: { app: bazarr }
     spec:
+      nodeSelector:
+        kubernetes.io/hostname: NODE_WITH_MEDIA
+      volumes:
+      - name: bazarr-config
+        persistentVolumeClaim:
+          claimName: bazarr-config-pvc
+      - name: media
+        hostPath:
+          path: /data-nfs/data/plex
+          type: Directory
       containers:
       - name: bazarr
         image: ghcr.io/linuxserver/bazarr:latest
         imagePullPolicy: IfNotPresent
         env:
-        - name: TZ
-          valueFrom: { configMapKeyRef: { name: media-common-env, key: TZ } }
-        - name: PUID
-          valueFrom: { configMapKeyRef: { name: media-common-env, key: PUID } }
-        - name: PGID
-          valueFrom: { configMapKeyRef: { name: media-common-env, key: PGID } }
+        - { name: PUID, value: "1044" }
+        - { name: PGID, value: "65541" }
+        - { name: TZ,   value: "Europe/Amsterdam" }
         ports:
         - { name: http, containerPort: 6767 }
         volumeMounts:
-        - { name: config, mountPath: /config }
-        - { name: media,  mountPath: /data }
-      volumes:
-      - name: config
-        persistentVolumeClaim: { claimName: bazarr-config-pvc }
-      - name: media
-        persistentVolumeClaim: { claimName: media-data-pvc }
+        - { name: bazarr-config, mountPath: /config }
+        - { name: media,         mountPath: /data }
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: bazarr
-  namespace: media
+  namespace: jellyfin
+  annotations:
+    metallb.universe.tf/allow-shared-ip: media-stack
 spec:
   selector: { app: bazarr }
-  type: ClusterIP
+  type: LoadBalancer
+  loadBalancerIP: "172.16.23.35"
+  sessionAffinity: ClientIP
   ports:
-  - { name: http, port: 6767, targetPort: 6767 }
+  - { name: bazarr-http, port: 6767, targetPort: 6767, protocol: TCP }
 ---
-# ========= JELLYSEERR =========
+# ===================== JELLYSEERR =====================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: jellyseerr
-  namespace: media
+  namespace: jellyfin
   labels: { app: jellyseerr }
 spec:
   replicas: 1
@@ -350,86 +320,35 @@ spec:
     metadata:
       labels: { app: jellyseerr }
     spec:
+      nodeSelector:
+        kubernetes.io/hostname: NODE_WITH_MEDIA
+      volumes:
+      - name: jellyseerr-config
+        persistentVolumeClaim:
+          claimName: jellyseerr-config-pvc
       containers:
       - name: jellyseerr
         image: fallenbagel/jellyseerr:latest
         imagePullPolicy: IfNotPresent
         env:
-        - name: TZ
-          valueFrom: { configMapKeyRef: { name: media-common-env, key: TZ } }
-        - name: LOG_LEVEL
-          value: info
+        - { name: TZ,        value: "Europe/Amsterdam" }
+        - { name: LOG_LEVEL, value: "info" }
         ports:
         - { name: http, containerPort: 5055 }
         volumeMounts:
-        - { name: config, mountPath: /app/config }
-      volumes:
-      - name: config
-        persistentVolumeClaim: { claimName: jellyseerr-config-pvc }
+        - { name: jellyseerr-config, mountPath: /app/config }
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: jellyseerr
-  namespace: media
+  namespace: jellyfin
+  annotations:
+    metallb.universe.tf/allow-shared-ip: media-stack
 spec:
   selector: { app: jellyseerr }
-  type: ClusterIP
+  type: LoadBalancer
+  loadBalancerIP: "172.16.23.35"
+  sessionAffinity: ClientIP
   ports:
-  - { name: http, port: 5055, targetPort: 5055 }
----
-# ========= INGRESS (NGINX + cert-manager) =========
-# Point each host to your DNS A/AAAA for your ingress controller's external IP.
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: media-ingress
-  namespace: media
-  annotations:
-    kubernetes.io/ingress.class: "nginx"
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"   # <-- ensure this exists
-spec:
-  tls:
-  - hosts:
-      - jellyfin.example.com
-      - radarr.example.com
-      - sonarr.example.com
-      - bazarr.example.com
-      - requests.example.com
-    secretName: media-wildcard-tls
-  rules:
-  - host: jellyfin.example.com
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service: { name: jellyfin, port: { number: 8096 } }
-  - host: radarr.example.com
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service: { name: radarr, port: { number: 7878 } }
-  - host: sonarr.example.com
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service: { name: sonarr, port: { number: 8989 } }
-  - host: bazarr.example.com
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service: { name: bazarr, port: { number: 6767 } }
-  - host: requests.example.com   # Jellyseerr
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service: { name: jellyseerr, port: { number: 5055 } }
+  - { name: jellyseerr-http, port: 5055, targetPort: 5055, protocol: TCP }
