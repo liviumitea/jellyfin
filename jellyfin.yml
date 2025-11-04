@@ -83,8 +83,6 @@ spec:
     metadata:
       labels: { app: jellyfin }
     spec:
-      nodeSelector:
-        kubernetes.io/hostname: NODE_WITH_MEDIA   # <-- set this
       volumes:
       - name: jellyfin-config
         persistentVolumeClaim:
@@ -113,7 +111,6 @@ spec:
         - { name: jellyfin-config, mountPath: /config }
         - { name: media,          mountPath: /data }
 ---
-# One TCP LoadBalancer IP for all UIs (shared IP on different ports)
 apiVersion: v1
 kind: Service
 metadata:
@@ -130,7 +127,6 @@ spec:
   - { name: jellyfin-http,  port: 8096, targetPort: 8096, protocol: TCP }
   - { name: jellyfin-https, port: 8920, targetPort: 8920, protocol: TCP }
 ---
-# Keep UDP discovery/DLNA on the SAME IP as well
 apiVersion: v1
 kind: Service
 metadata:
@@ -161,8 +157,6 @@ spec:
     metadata:
       labels: { app: radarr }
     spec:
-      nodeSelector:
-        kubernetes.io/hostname: NODE_WITH_MEDIA
       volumes:
       - name: radarr-config
         persistentVolumeClaim:
@@ -214,8 +208,6 @@ spec:
     metadata:
       labels: { app: sonarr }
     spec:
-      nodeSelector:
-        kubernetes.io/hostname: NODE_WITH_MEDIA
       volumes:
       - name: sonarr-config
         persistentVolumeClaim:
@@ -267,8 +259,6 @@ spec:
     metadata:
       labels: { app: bazarr }
     spec:
-      nodeSelector:
-        kubernetes.io/hostname: NODE_WITH_MEDIA
       volumes:
       - name: bazarr-config
         persistentVolumeClaim:
@@ -320,8 +310,6 @@ spec:
     metadata:
       labels: { app: jellyseerr }
     spec:
-      nodeSelector:
-        kubernetes.io/hostname: NODE_WITH_MEDIA
       volumes:
       - name: jellyseerr-config
         persistentVolumeClaim:
